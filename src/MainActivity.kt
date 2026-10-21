@@ -50,6 +50,19 @@ import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import coil.compose.AsyncImage
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
+import android.view.ViewGroup
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.CookieManager
+import android.webkit.WebViewClient
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -149,6 +162,93 @@ fun hueOf(s: Song) = ((s.title.hashCode() and 0x7fffffff) % 360).toFloat()
 fun greeting(): String {
     val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
     return if (h < 12) "Buenos días" else if (h < 20) "Buenas tardes" else "Buenas noches"
+}
+
+data class YtTrack(val id: String, val title: String, val channel: String, val thumb: String)
+
+val YT_ID = Regex("(?:youtu\\.be/|youtube\\.com/(?:watch\\?(?:[^#\\s]*&)?v=|embed/|shorts/|live/)|music\\.youtube\\.com/watch\\?(?:[^#\\s]*&)?v=)([\\w-]{11})")
+
+const val YT_HTML = """<html><body style="margin:0;background:#000"><div id="p"></div>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+var p,ready=false,pending=null;
+function onYouTubeIframeAPIReady(){p=new YT.Player('p',{width:'100%',height:'100%',playerVars:{playsinline:1,rel:0,origin:'https://www.youtube.com'},events:{onReady:function(){ready=true;if(pending){p.loadVideoById(pending);pending=null}Android.ready()},onStateChange:function(e){Android.state(e.data)},onError:function(e){Android.error(e.data)}}})}
+function load(id){if(ready)p.loadVideoById(id);else pending=id}
+function pl(){if(ready)p.playVideo()}
+function pa(){if(ready)p.pauseVideo()}
+function sk(s){if(ready)p.seekTo(s,true)}
+setInterval(function(){if(ready&&p.getCurrentTime)Android.time(p.getCurrentTime(),p.getDuration())},500);
+</script></body></html>"""
+
+fun httpGet(u: String): String {
+    val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+    c.connectTimeout = 8000
+    c.readTimeout = 8000
+    try {
+        val code = c.responseCode
+        val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().use { it.readText() }
+        if (code !in 200..299) {
+            val m = try { JSONObject(txt).getJSONObject("error").getString("message") } catch (e: Exception) { "HTTP $code" }
+            throw Exception(m)
+        }
+        return txt
+    } finally { c.disconnect() }
+}
+
+fun ytSearch(q: String, key: String): List<YtTrack> {
+    val u = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoSyndicated=true&videoCategoryId=10&maxResults=25&q=" +
+        java.net.URLEncoder.encode(q, "UTF-8") + "&key=" + java.net.URLEncoder.encode(key, "UTF-8")
+    val items = JSONObject(httpGet(u)).optJSONArray("items") ?: return emptyList()
+    val out = mutableListOf<YtTrack>()
+    for (i in 0 until items.length()) {
+        val o = items.getJSONObject(i)
+        val id = o.optJSONObject("id")?.optString("videoId") ?: ""
+        if (id.isEmpty()) continue
+        val sn = o.optJSONObject("snippet") ?: continue
+        val title = android.text.Html.fromHtml(sn.optString("title"), android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+        val thumb = sn.optJSONObject("thumbnails")?.optJSONObject("high")?.optString("url") ?: "https://i.ytimg.com/vi/$id/hqdefault.jpg"
+        out.add(YtTrack(id, title, sn.optString("channelTitle", "YouTube"), thumb))
+    }
+    return out
+}
+
+fun ytOembed(id: String): YtTrack = try {
+    val j = JSONObject(httpGet("https://www.youtube.com/oembed?url=" + java.net.URLEncoder.encode("https://www.youtube.com/watch?v=$id", "UTF-8") + "&format=json"))
+    YtTrack(id, j.optString("title", "Video de YouTube"), j.optString("author_name", "YouTube"), "https://i.ytimg.com/vi/$id/hqdefault.jpg")
+} catch (e: Exception) {
+    YtTrack(id, "Video de YouTube", "YouTube", "https://i.ytimg.com/vi/$id/hqdefault.jpg")
+}
+
+fun ytErr(c: Int): String = when (c) {
+    2 -> "Enlace de video no válido."
+    5 -> "El reproductor tuvo un problema con este video."
+    100 -> "Este video ya no está disponible."
+    101, 150 -> "El propietario no permite reproducirlo fuera de YouTube."
+    153 -> "YouTube rechazó el reproductor integrado (error 153)."
+    else -> "No se pudo reproducir este video."
+}
+
+class YtBridge(
+    val onState: (Int) -> Unit, val onError: (Int) -> Unit, val onTime: (Double, Double) -> Unit
+) {
+    private val h = Handler(Looper.getMainLooper())
+    @JavascriptInterface fun ready() {}
+    @JavascriptInterface fun state(s: Int) { h.post { onState(s) } }
+    @JavascriptInterface fun error(c: Int) { h.post { onError(c) } }
+    @JavascriptInterface fun time(c: Double, d: Double) { h.post { onTime(c, d) } }
+}
+
+@Composable
+fun YtRow(t: YtTrack, on: Boolean, onPlay: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(width = 96.dp, height = 54.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF2A2A2B))) {
+            AsyncImage(model = t.thumb, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(t.title, color = if (on) Green else Color.White, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(t.channel, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -292,11 +392,27 @@ fun App() {
     var repeat by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var dragging by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var srcTab by remember { mutableIntStateOf(0) }
+    var apiKey by remember { mutableStateOf(prefs(ctx).getString("ytkey", "") ?: "") }
+    var keyInput by remember { mutableStateOf("") }
+    var ytResults by remember { mutableStateOf<List<YtTrack>>(emptyList()) }
+    var ytList by remember { mutableStateOf<List<YtTrack>>(emptyList()) }
+    var ytIdx by remember { mutableIntStateOf(-1) }
+    var ytPlaying by remember { mutableStateOf(false) }
+    var ytPos by remember { mutableDoubleStateOf(0.0) }
+    var ytDur by remember { mutableDoubleStateOf(0.0) }
+    var ytDrag by remember { mutableStateOf(false) }
+    var ytLoading by remember { mutableStateOf(false) }
+    var ytNote by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    var ytFull by remember { mutableStateOf(false) }
+    var showLogin by remember { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted = hasPerm(ctx) }
     LaunchedEffect(Unit) { if (!granted) launcher.launch(askPerms()) }
     LaunchedEffect(granted, reload) { if (granted) songs = withContext(Dispatchers.IO) { loadSongs(ctx) } }
     BackHandler(enabled = expanded) { expanded = false }
+    BackHandler(enabled = ytFull) { ytFull = false }
 
     DisposableEffect(Unit) {
         val future = MediaController.Builder(ctx, SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))).buildAsync()
@@ -358,9 +474,64 @@ fun App() {
         if (query.isBlank()) emptyList() else songs.filter { it.title.contains(query, true) || it.artist.contains(query, true) }
     }
 
+    val web = remember { WebView(ctx) }
+    fun ytPlayAt(list: List<YtTrack>, i: Int) {
+        val t = list.getOrNull(i) ?: return
+        ctrl?.pause()
+        expanded = false
+        ytList = list; ytIdx = i; ytPos = 0.0; ytDur = 0.0
+        web.evaluateJavascript("load('${t.id}')", null)
+    }
+    fun ytNext() { if (ytIdx + 1 < ytList.size) ytPlayAt(ytList, ytIdx + 1) else ytPlaying = false }
+    fun ytClose() { web.evaluateJavascript("pa()", null); ytIdx = -1; ytPlaying = false; ytFull = false }
+    fun ytPrev() { if (ytIdx > 0) ytPlayAt(ytList, ytIdx - 1) }
+    fun reloadPlayer() {
+        ytClose()
+        CookieManager.getInstance().flush()
+        web.loadDataWithBaseURL("https://www.youtube.com", YT_HTML, "text/html", "utf-8", null)
+    }
+    DisposableEffect(Unit) {
+        web.settings.javaScriptEnabled = true
+        web.settings.domStorageEnabled = true
+        web.settings.mediaPlaybackRequiresUserGesture = false
+        web.webChromeClient = WebChromeClient()
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
+        web.addJavascriptInterface(
+            YtBridge(
+                onState = { s -> when (s) { 1 -> ytPlaying = true; 2 -> ytPlaying = false; 0 -> { ytPlaying = false; ytNext() } } },
+                onError = { c -> msg = ytErr(c); ytNext() },
+                onTime = { c, d -> if (!ytDrag) { ytPos = c; ytDur = d } }
+            ), "Android"
+        )
+        web.loadDataWithBaseURL("https://www.youtube.com", YT_HTML, "text/html", "utf-8", null)
+        onDispose { web.destroy() }
+    }
+    fun doSearch() {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        recents = (listOf(q) + recents.filter { it != q }).take(8); saveRecents(ctx, recents)
+        if (srcTab == 1) {
+            val id = YT_ID.find(q)?.groupValues?.get(1)
+            if (id != null) {
+                scope.launch { val t = withContext(Dispatchers.IO) { ytOembed(id) }; ytPlayAt(listOf(t), 0) }
+            } else if (apiKey.isBlank()) {
+                ytNote = "Primero pega tu clave de YouTube."
+            } else {
+                scope.launch {
+                    ytLoading = true; ytNote = ""
+                    try {
+                        ytResults = withContext(Dispatchers.IO) { ytSearch(q, apiKey) }
+                        if (ytResults.isEmpty()) ytNote = "Sin resultados."
+                    } catch (e: Exception) { ytNote = "No se pudo buscar: ${e.message}" }
+                    ytLoading = false
+                }
+            }
+        }
+    }
     fun play(list: List<Song>, i: Int) {
         val c = ctrl
-        if (c == null) msg = "Iniciando el reproductor, intenta otra vez" else playList(c, list, i)
+        if (c == null) msg = "Iniciando el reproductor, intenta otra vez" else { if (ytIdx >= 0) ytClose(); playList(c, list, i) }
     }
     fun toggleFav(id: Long) { favs = if (id in favs) favs - id else favs + id; saveFavs(ctx, favs) }
     fun nextOf(s: Song) { val c = ctrl; if (c != null) { enqueue(c, s, true); msg = "Sonará a continuación" } }
@@ -436,17 +607,18 @@ fun App() {
                             itemsIndexed(top) { i, s -> Row1(s, i, true, top) }
                         }
                         tab == 1 -> Column(Modifier.fillMaxSize()) {
-                            Text("Buscar", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 10.dp))
+                            Text("Buscar", color = Color.White, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 6.dp))
+                            Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Chip("Mi música", srcTab == 0) { srcTab = 0 }
+                                Chip("YouTube", srcTab == 1) { srcTab = 1 }
+                            }
                             TextField(
                                 value = query, onValueChange = { query = it }, singleLine = true, shape = RoundedCornerShape(25.dp),
-                                placeholder = { Text("Busca una canción o artista") },
+                                placeholder = { Text(if (srcTab == 1) "Busca en YouTube o pega un enlace" else "Busca una canción o artista") },
                                 leadingIcon = { Text("⌕", fontSize = 22.sp, color = Muted) },
                                 trailingIcon = { if (query.isNotEmpty()) Text("✕", color = Muted, modifier = Modifier.clickable { query = "" }.padding(12.dp)) },
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                keyboardActions = KeyboardActions(onSearch = {
-                                    val q = query.trim()
-                                    if (q.isNotEmpty()) { recents = (listOf(q) + recents.filter { it != q }).take(8); saveRecents(ctx, recents) }
-                                }),
+                                keyboardActions = KeyboardActions(onSearch = { doSearch() }),
                                 colors = TextFieldDefaults.colors(
                                     focusedContainerColor = Color(0xFF242424), unfocusedContainerColor = Color(0xFF242424),
                                     focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent
@@ -454,20 +626,51 @@ fun App() {
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
                             )
                             LazyColumn(Modifier.fillMaxSize()) {
-                                if (query.isBlank()) {
-                                    item { Title("Recientes") }
-                                    if (recents.isEmpty()) item { Text("Tus búsquedas aparecerán aquí.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp)) }
-                                    itemsIndexed(recents) { _, r ->
-                                        Row(Modifier.fillMaxWidth().clickable { query = r }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Text("⌕", color = Muted, fontSize = 20.sp)
-                                            Text(r, color = Color.White, modifier = Modifier.weight(1f).padding(horizontal = 14.dp))
-                                            Text("✕", color = Muted, modifier = Modifier.clickable { recents = recents - r; saveRecents(ctx, recents) }.padding(8.dp))
+                                if (srcTab == 0) {
+                                    if (query.isBlank()) {
+                                        item { Title("Recientes") }
+                                        if (recents.isEmpty()) item { Text("Tus búsquedas aparecerán aquí.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp)) }
+                                        itemsIndexed(recents) { _, r ->
+                                            Row(Modifier.fillMaxWidth().clickable { query = r }.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Text("⌕", color = Muted, fontSize = 20.sp)
+                                                Text(r, color = Color.White, modifier = Modifier.weight(1f).padding(horizontal = 14.dp))
+                                                Text("✕", color = Muted, modifier = Modifier.clickable { recents = recents - r; saveRecents(ctx, recents) }.padding(8.dp))
+                                            }
                                         }
+                                    } else {
+                                        item { Title("Canción") }
+                                        if (results.isEmpty()) item { Text("Sin resultados para “$query”.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp)) }
+                                        itemsIndexed(results) { i, s -> Row1(s, i, false, results) }
                                     }
                                 } else {
-                                    item { Title("Canción") }
-                                    if (results.isEmpty()) item { Text("Sin resultados para “$query”.", color = Muted, modifier = Modifier.padding(horizontal = 16.dp)) }
-                                    itemsIndexed(results) { i, s -> Row1(s, i, false, results) }
+                                    item { Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) { Chip("Iniciar sesión en YouTube", false) { showLogin = true } } }
+                                    if (apiKey.isBlank()) {
+                                        item {
+                                            Column(Modifier.padding(16.dp).clip(RoundedCornerShape(12.dp)).background(Panel).padding(16.dp)) {
+                                                Text("Conecta la búsqueda de YouTube", color = Color.White, fontWeight = FontWeight.Bold)
+                                                Text("1. Abre Google Cloud e inicia sesión.\n2. Crea un proyecto y activa “YouTube Data API v3”.\n3. Crea una clave de API y pégala aquí abajo.\n\nSin clave también puedes pegar el enlace de un video en el buscador.", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp, bottom = 10.dp))
+                                                Button(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://console.cloud.google.com/apis/library/youtube.googleapis.com"))) }) { Text("Abrir Google Cloud") }
+                                                TextField(
+                                                    value = keyInput, onValueChange = { keyInput = it }, singleLine = true,
+                                                    placeholder = { Text("Clave de API de YouTube") },
+                                                    colors = TextFieldDefaults.colors(focusedContainerColor = Color(0xFF242424), unfocusedContainerColor = Color(0xFF242424), focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent),
+                                                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                                                )
+                                                Button(
+                                                    onClick = { val k = keyInput.trim(); if (k.isNotEmpty()) { apiKey = k; prefs(ctx).edit().putString("ytkey", k).apply(); keyInput = ""; msg = "Clave guardada" } },
+                                                    modifier = Modifier.padding(top = 8.dp)
+                                                ) { Text("Guardar clave") }
+                                            }
+                                        }
+                                    }
+                                    item {
+                                        val n = if (ytLoading) "Buscando en YouTube…" else ytNote
+                                        if (n.isNotBlank()) Text(n, color = Muted, modifier = Modifier.padding(16.dp))
+                                    }
+                                    itemsIndexed(ytResults) { i, t -> YtRow(t, ytList.getOrNull(ytIdx)?.id == t.id) { ytPlayAt(ytResults, i) } }
+                                    if (apiKey.isNotBlank()) item {
+                                        Text("Quitar clave de YouTube", color = Muted, fontSize = 12.sp, modifier = Modifier.clickable { apiKey = ""; prefs(ctx).edit().putString("ytkey", "").apply() }.padding(16.dp))
+                                    }
                                 }
                             }
                         }
@@ -490,8 +693,37 @@ fun App() {
                     Text(it, color = Color(0xFFFFD9A0), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
                     LaunchedEffect(it) { delay(3000); msg = null }
                 }
+                val yt = ytList.getOrNull(ytIdx)
+                if (yt != null && !ytFull) {
+                    Column(Modifier.fillMaxWidth().background(Color(0xFF101010))) {
+                        AndroidView(
+                            factory = { (web.parent as? ViewGroup)?.removeView(web); web },
+                            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                        )
+                        Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(yt.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(yt.channel + " · YouTube", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Box(Modifier.size(40.dp).clickable { web.evaluateJavascript(if (ytPlaying) "pa()" else "pl()", null) }, contentAlignment = Alignment.Center) {
+                                if (ytPlaying) PauseBars(Color.White, 5.dp, 18.dp) else Text("▶", color = Color.White, fontSize = 20.sp)
+                            }
+                            Text("⏭", color = Color.White, fontSize = 22.sp, modifier = Modifier.clickable { ytNext() }.padding(8.dp))
+                            Text("⤢", color = Color.White, fontSize = 20.sp, modifier = Modifier.clickable { ytFull = true }.padding(8.dp))
+                            Text("✕", color = Muted, fontSize = 18.sp, modifier = Modifier.clickable { ytClose() }.padding(8.dp))
+                        }
+                        Slider(
+                            value = ytPos.coerceIn(0.0, maxOf(ytDur, 1.0)).toFloat(),
+                            onValueChange = { ytDrag = true; ytPos = it.toDouble() },
+                            onValueChangeFinished = { web.evaluateJavascript("sk($ytPos)", null); ytDrag = false },
+                            valueRange = 0f..maxOf(ytDur, 1.0).toFloat(),
+                            colors = SliderDefaults.colors(thumbColor = Green, activeTrackColor = Green),
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                }
                 val cs = byId[curId]
-                if (cs != null) {
+                if (cs != null && yt == null) {
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).clip(RoundedCornerShape(14.dp))
                             .background(Color.hsv(hueOf(cs), 0.35f, 0.2f)).clickable { expanded = true }.padding(8.dp),
@@ -513,6 +745,74 @@ fun App() {
                     NavItem("⌕", "Buscar", tab == 1, Modifier.weight(1f)) { tab = 1 }
                     NavItem("▤", "Tu Biblioteca", tab == 2, Modifier.weight(1f)) { tab = 2 }
                     NavItem("☰", "Cola", tab == 3, Modifier.weight(1f)) { tab = 3 }
+                }
+            }
+
+            val yf = ytList.getOrNull(ytIdx)
+            if (ytFull && yf != null) {
+                Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF2A1F22), Color(0xFF0B0B0C)))).systemBarsPadding()) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("⌄", color = Color.White, fontSize = 26.sp, modifier = Modifier.clickable { ytFull = false }.padding(4.dp))
+                        Text("Reproduciendo desde YouTube", color = Muted, fontSize = 12.sp, modifier = Modifier.weight(1f).padding(start = 12.dp))
+                        Text("✕", color = Muted, fontSize = 18.sp, modifier = Modifier.clickable { ytClose() }.padding(8.dp))
+                    }
+                    AndroidView(
+                        factory = { (web.parent as? ViewGroup)?.removeView(web); web },
+                        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                    )
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+                        Text(yf.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(yf.channel, color = Color(0xFFCCCCCC), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Slider(
+                            value = ytPos.coerceIn(0.0, maxOf(ytDur, 1.0)).toFloat(),
+                            onValueChange = { ytDrag = true; ytPos = it.toDouble() },
+                            onValueChangeFinished = { web.evaluateJavascript("sk($ytPos)", null); ytDrag = false },
+                            valueRange = 0f..maxOf(ytDur, 1.0).toFloat(),
+                            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color(0x44FFFFFF))
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(fmt((ytPos * 1000).toLong()), color = Color(0xFFCCCCCC), fontSize = 12.sp)
+                            Text(if (ytPlaying) "REPRODUCIENDO" else "EN PAUSA", color = Color(0xFF999999), fontSize = 11.sp, letterSpacing = 1.sp)
+                            Text("-" + fmt(((ytDur - ytPos) * 1000).toLong()), color = Color(0xFFCCCCCC), fontSize = 12.sp)
+                        }
+                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                            Text("⏮", color = Color.White, fontSize = 30.sp, modifier = Modifier.clickable { ytPrev() }.padding(14.dp))
+                            Box(Modifier.size(70.dp).clickable { web.evaluateJavascript(if (ytPlaying) "pa()" else "pl()", null) }, contentAlignment = Alignment.Center) {
+                                if (ytPlaying) PauseBars(Color.White, 11.dp, 40.dp) else Text("▶", color = Color.White, fontSize = 42.sp)
+                            }
+                            Text("⏭", color = Color.White, fontSize = 30.sp, modifier = Modifier.clickable { ytNext() }.padding(14.dp))
+                        }
+                    }
+                    Text("En esta lista", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 6.dp))
+                    LazyColumn(Modifier.weight(1f)) {
+                        itemsIndexed(ytList) { i, t -> YtRow(t, i == ytIdx) { ytPlayAt(ytList, i) } }
+                    }
+                }
+            }
+
+            if (showLogin) {
+                androidx.compose.ui.window.Dialog(
+                    onDismissRequest = { showLogin = false; reloadPlayer() },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)
+                ) {
+                    Column(Modifier.fillMaxSize().background(Bg).systemBarsPadding()) {
+                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Iniciar sesión en YouTube", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text("✕", color = Color.White, fontSize = 20.sp, modifier = Modifier.clickable { showLogin = false; reloadPlayer() }.padding(8.dp))
+                        }
+                        AndroidView(
+                            factory = { c ->
+                                WebView(c).apply {
+                                    settings.javaScriptEnabled = true
+                                    settings.domStorageEnabled = true
+                                    CookieManager.getInstance().setAcceptCookie(true)
+                                    webViewClient = WebViewClient()
+                                    loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F")
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
 
