@@ -8,7 +8,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
-        android:label="cris_music"
+        android:label="CYA"
         android:icon="@android:drawable/ic_media_play"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
@@ -25,5 +25,19 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <receiver android:name=".PlayerWidget" android:exported="false" android:label="CYA · Reproductor">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/cya_widget_info" />
+        </receiver>
+        <receiver android:name=".StatsWidget" android:exported="false" android:label="CYA · Estadísticas">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/cya_widget_info" />
+        </receiver>
+        <receiver android:name=".WidgetActions" android:exported="false" />
     </application>
 </manifest>
