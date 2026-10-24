@@ -67,12 +67,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-val Green = Color(0xFF1ED760)
+val Accent = Color(0xFFE5303A)
+val BgTop = Color(0xFF4A0E14)
 val Bg = Color(0xFF0B0B0C)
 val Panel = Color(0xFF1A1A1B)
-val Muted = Color(0xFFA8B0AD)
+val Muted = Color(0xFFB0A8A8)
 val ChipBg = Color(0xFF262627)
-val PlayingBg = Color(0xFF1D2E24)
+val PlayingBg = Color(0xFF3A1519)
 
 data class Song(val id: Long, val title: String, val artist: String, val uri: Uri, val art: Uri, val added: Long)
 
@@ -168,17 +169,21 @@ data class YtTrack(val id: String, val title: String, val channel: String, val t
 
 val YT_ID = Regex("(?:youtu\\.be/|youtube\\.com/(?:watch\\?(?:[^#\\s]*&)?v=|embed/|shorts/|live/)|music\\.youtube\\.com/watch\\?(?:[^#\\s]*&)?v=)([\\w-]{11})")
 
-const val YT_HTML = """<html><body style="margin:0;background:#000"><div id="p"></div>
-<script src="https://www.youtube.com/iframe_api"></script>
+const val YT_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin-when-cross-origin">
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{width:100%;height:100%;border:0}</style></head><body><div id="p"></div>
 <script>
-var p,ready=false,pending=null;
-function onYouTubeIframeAPIReady(){p=new YT.Player('p',{width:'100%',height:'100%',playerVars:{playsinline:1,rel:0,origin:'https://www.youtube.com'},events:{onReady:function(){ready=true;if(pending){p.loadVideoById(pending);pending=null}Android.ready()},onStateChange:function(e){Android.state(e.data)},onError:function(e){Android.error(e.data)}}})}
-function load(id){if(ready)p.loadVideoById(id);else pending=id}
+var p,ready=false,pending=null,started=false,wd=null;
+function onYouTubeIframeAPIReady(){p=new YT.Player('p',{width:'100%',height:'100%',playerVars:{playsinline:1,rel:0,origin:'https://__APP__'},events:{onReady:function(){ready=true;if(pending){p.loadVideoById(pending);pending=null}Android.ready()},onStateChange:function(e){if(e.data==1||e.data==3)started=true;Android.state(e.data)},onError:function(e){started=true;clearTimeout(wd);Android.error(e.data)}}})}
+function load(id){started=false;clearTimeout(wd);wd=setTimeout(function(){if(!started)Android.error(-2)},15000);if(ready)p.loadVideoById(id);else pending=id}
 function pl(){if(ready)p.playVideo()}
 function pa(){if(ready)p.pauseVideo()}
-function sk(s){if(ready)p.seekTo(s,true)}
+function sk(t){if(ready)p.seekTo(t,true)}
 setInterval(function(){if(ready&&p.getCurrentTime)Android.time(p.getCurrentTime(),p.getDuration())},500);
-</script></body></html>"""
+</script>
+<script src="https://www.youtube.com/iframe_api" onerror="Android.error(-1)"></script></body></html>"""
+
+fun ytPage(ctx: Context): String = YT_HTML.replace("__APP__", ctx.packageName)
+fun ytBase(ctx: Context): String = "https://" + ctx.packageName
 
 fun httpGet(u: String): String {
     val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
@@ -224,7 +229,8 @@ fun ytErr(c: Int): String = when (c) {
     5 -> "El reproductor tuvo un problema con este video."
     100 -> "Este video ya no está disponible."
     101, 150 -> "El propietario no permite reproducirlo fuera de YouTube."
-    153 -> "YouTube rechazó el reproductor integrado (error 153)."
+    152, 153 -> "YouTube rechazó el reproductor integrado."
+    -1, -2 -> "El reproductor de YouTube no cargó o no empezó. Revisa tu internet."
     else -> "No se pudo reproducir este video."
 }
 
@@ -245,7 +251,7 @@ fun YtRow(t: YtTrack, on: Boolean, onPlay: () -> Unit) {
             AsyncImage(model = t.thumb, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         }
         Column(Modifier.weight(1f).padding(start = 14.dp)) {
-            Text(t.title, color = if (on) Green else Color.White, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(t.title, color = if (on) Accent else Color.White, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(t.channel, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -262,8 +268,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Chip(t: String, on: Boolean, onClick: () -> Unit) {
     Text(
-        t, color = if (on) Color(0xFF071108) else Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(if (on) Green else ChipBg)
+        t, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.clip(RoundedCornerShape(20.dp)).background(if (on) Accent else ChipBg)
             .clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 9.dp)
     )
 }
@@ -286,7 +292,7 @@ fun PauseBars(color: Color, w: Dp, h: Dp) {
 @Composable
 fun QBtn(t: String, onClick: () -> Unit) {
     Box(
-        Modifier.padding(start = 4.dp).size(32.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF303735)).clickable(onClick = onClick),
+        Modifier.padding(start = 4.dp).size(32.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF303030)).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) { Text(t, color = Color.White, fontSize = 13.sp) }
 }
@@ -314,10 +320,10 @@ fun SongRow(
         if (rank != null) Text(rank.toString(), color = Muted, fontSize = 14.sp, modifier = Modifier.width(26.dp))
         Cover(s, Modifier.size(56.dp), RoundedCornerShape(6.dp))
         Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-            Text(s.title, color = if (on) Green else Color.White, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(s.title, color = if (on) Accent else Color.White, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(s.artist, color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text(if (fav) "♥" else "♡", color = if (fav) Green else Color(0xFFDDDDDD), fontSize = 24.sp, modifier = Modifier.clickable(onClick = onFav).padding(8.dp))
+        Text(if (fav) "♥" else "♡", color = if (fav) Accent else Color(0xFFDDDDDD), fontSize = 24.sp, modifier = Modifier.clickable(onClick = onFav).padding(8.dp))
         Box {
             Text("⋮", color = Color(0xFFDDDDDD), fontSize = 22.sp, modifier = Modifier.clickable { menu = true }.padding(horizontal = 10.dp, vertical = 8.dp))
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -348,7 +354,7 @@ fun QueueView(ids: List<String>, byId: Map<String, Song>, curId: String?, ctrl: 
                 ) {
                     Cover(s, Modifier.size(44.dp))
                     Column(Modifier.weight(1f).padding(horizontal = 10.dp).clickable { ctrl?.seekToDefaultPosition(i); ctrl?.play() }) {
-                        Text(s.title, color = if (id == curId) Green else Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(s.title, color = if (id == curId) Accent else Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(s.artist, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     QBtn("▲") { if (i > 0) ctrl?.moveMediaItem(i, i - 1) }
@@ -404,6 +410,7 @@ fun App() {
     var ytDrag by remember { mutableStateOf(false) }
     var ytLoading by remember { mutableStateOf(false) }
     var ytNote by remember { mutableStateOf("") }
+    var ytProblem by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var ytFull by remember { mutableStateOf(false) }
     var showLogin by remember { mutableStateOf(false) }
@@ -421,11 +428,7 @@ fun App() {
             override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
                 curId = item?.mediaId; pos = 0L
                 ctrl?.let { dur = it.duration.coerceAtLeast(0L) }
-                item?.mediaId?.let { id ->
-                    val n = prefs(ctx).getInt("p_$id", 0) + 1
-                    prefs(ctx).edit().putInt("p_$id", n).apply()
-                    plays = plays + (id to n)
-                }
+                plays = loadPlays(ctx)
             }
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
                 ctrl?.let { c -> queueIds = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId } }
@@ -474,21 +477,44 @@ fun App() {
         if (query.isBlank()) emptyList() else songs.filter { it.title.contains(query, true) || it.artist.contains(query, true) }
     }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(5000)
+            val l = loadPlays(ctx)
+            if (l != plays) plays = l
+        }
+    }
+    LaunchedEffect(top) {
+        prefs(ctx).edit().putString("w_top", top.firstOrNull()?.title ?: "").apply()
+        CyaWidgets.refresh(ctx)
+    }
+    LaunchedEffect(ytPlaying) {
+        var n = 0
+        while (ytPlaying) {
+            delay(1000)
+            if (ytPlaying) {
+                CyaStats.addSeconds(ctx, 1)
+                n++
+                if (n % 60 == 0) CyaWidgets.refresh(ctx)
+            }
+        }
+    }
+
     val web = remember { WebView(ctx) }
     fun ytPlayAt(list: List<YtTrack>, i: Int) {
         val t = list.getOrNull(i) ?: return
         ctrl?.pause()
         expanded = false
-        ytList = list; ytIdx = i; ytPos = 0.0; ytDur = 0.0
+        ytList = list; ytIdx = i; ytPos = 0.0; ytDur = 0.0; ytProblem = ""
         web.evaluateJavascript("load('${t.id}')", null)
     }
     fun ytNext() { if (ytIdx + 1 < ytList.size) ytPlayAt(ytList, ytIdx + 1) else ytPlaying = false }
-    fun ytClose() { web.evaluateJavascript("pa()", null); ytIdx = -1; ytPlaying = false; ytFull = false }
+    fun ytClose() { web.evaluateJavascript("pa()", null); ytIdx = -1; ytPlaying = false; ytFull = false; ytProblem = "" }
     fun ytPrev() { if (ytIdx > 0) ytPlayAt(ytList, ytIdx - 1) }
     fun reloadPlayer() {
         ytClose()
         CookieManager.getInstance().flush()
-        web.loadDataWithBaseURL("https://www.youtube.com", YT_HTML, "text/html", "utf-8", null)
+        web.loadDataWithBaseURL(ytBase(ctx), ytPage(ctx), "text/html", "utf-8", null)
     }
     DisposableEffect(Unit) {
         web.settings.javaScriptEnabled = true
@@ -499,12 +525,12 @@ fun App() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.addJavascriptInterface(
             YtBridge(
-                onState = { s -> when (s) { 1 -> ytPlaying = true; 2 -> ytPlaying = false; 0 -> { ytPlaying = false; ytNext() } } },
-                onError = { c -> msg = ytErr(c); ytNext() },
+                onState = { s -> when (s) { 1 -> { ytPlaying = true; ytProblem = "" }; 2 -> ytPlaying = false; 0 -> { ytPlaying = false; ytNext() } } },
+                onError = { c -> if (ytIdx + 1 < ytList.size) { msg = ytErr(c); ytNext() } else { ytProblem = ytErr(c) + " (código $c)"; ytPlaying = false } },
                 onTime = { c, d -> if (!ytDrag) { ytPos = c; ytDur = d } }
             ), "Android"
         )
-        web.loadDataWithBaseURL("https://www.youtube.com", YT_HTML, "text/html", "utf-8", null)
+        web.loadDataWithBaseURL(ytBase(ctx), ytPage(ctx), "text/html", "utf-8", null)
         onDispose { web.destroy() }
     }
     fun doSearch() {
@@ -541,20 +567,20 @@ fun App() {
             { play(list, i) }, { toggleFav(s.id) }, { nextOf(s) }, { queueOf(s) })
     }
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Green, background = Bg, surface = Panel)) {
-        Box(Modifier.fillMaxSize().background(Bg)) {
+    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, onPrimary = Color.White, background = Bg, surface = Panel)) {
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to BgTop, 0.5f to Bg, 1f to Bg))) {
             Column(Modifier.fillMaxSize().systemBarsPadding()) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
                     when {
                         !granted -> Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("Necesito permiso para leer tu música.", color = Color.White)
-                            Text("Si no aparece el aviso, actívalo en Ajustes > Apps > cris_music > Permisos.", color = Muted, fontSize = 13.sp)
+                            Text("Si no aparece el aviso, actívalo en Ajustes > Apps > CYA > Permisos.", color = Muted, fontSize = 13.sp)
                             Button(onClick = { launcher.launch(askPerms()) }, modifier = Modifier.padding(top = 12.dp)) { Text("Dar permiso") }
                         }
                         tab == 0 -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
                             item {
                                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Box(Modifier.size(40.dp).clip(CircleShape).background(Green), contentAlignment = Alignment.Center) { Text("C", color = Color.Black, fontWeight = FontWeight.ExtraBold) }
+                                    Box(Modifier.size(40.dp).clip(CircleShape).background(Accent), contentAlignment = Alignment.Center) { Text("C", color = Color.White, fontWeight = FontWeight.ExtraBold) }
                                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                         Text(greeting(), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                                         Text("Descubre tu música, ${songs.size} canciones", color = Muted, fontSize = 12.sp)
@@ -566,17 +592,35 @@ fun App() {
                             item {
                                 Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Tile("Tus me gusta", "♥", Color(0xFF6C4DFF), Modifier.weight(1f)) { libTab = 0; tab = 2 }
-                                        Tile("En bucle", "∞", Color(0xFFC13FD0), Modifier.weight(1f)) {
+                                        Tile("Tus me gusta", "♥", Color(0xFFB71C1C), Modifier.weight(1f)) { libTab = 0; tab = 2 }
+                                        Tile("En bucle", "∞", Color(0xFFC2185B), Modifier.weight(1f)) {
                                             if (songs.isNotEmpty()) { play(songs, 0); ctrl?.setRepeatMode(Player.REPEAT_MODE_ALL) }
                                         }
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Tile("Mezcla aleatoria", "⇄", Color(0xFF14A8A0), Modifier.weight(1f)) {
+                                        Tile("Mezcla aleatoria", "⇄", Color(0xFFE64A19), Modifier.weight(1f)) {
                                             if (songs.isNotEmpty()) { play(songs.shuffled(), 0); ctrl?.setShuffleModeEnabled(true) }
                                         }
-                                        Tile("Todas las canciones", "♫", Color(0xFF2E7D4F), Modifier.weight(1f)) { libTab = 1; tab = 2 }
+                                        Tile("Todas las canciones", "♫", Color(0xFF8E1B2C), Modifier.weight(1f)) { libTab = 1; tab = 2 }
                                     }
+                                }
+                            }
+                            item {
+                                Row(
+                                    Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp)).background(Panel)
+                                        .clickable { libTab = 2; tab = 2 }.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("📊", fontSize = 22.sp)
+                                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                        Text("Tus estadísticas", color = Color.White, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            "Hoy: " + CyaStats.durText(CyaStats.secondsOn(ctx, 0)) + " · Racha: " + CyaStats.streak(ctx) + " d",
+                                            color = Muted, fontSize = 12.sp
+                                        )
+                                    }
+                                    Text("›", color = Muted, fontSize = 22.sp)
                                 }
                             }
                             item { Title("Añadidas recientemente") }
@@ -679,11 +723,14 @@ fun App() {
                             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Chip("Favoritas", libTab == 0) { libTab = 0 }
                                 Chip("Todas", libTab == 1) { libTab = 1 }
+                                Chip("Estadísticas", libTab == 2) { libTab = 2 }
                             }
+                            if (libTab == 2) StatsView(songs, plays) else {
                             val l = if (libTab == 0) favList else songs
                             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 10.dp)) {
                                 if (l.isEmpty()) item { Text("Todavía no guardas canciones. Pulsa ♡ en cualquier canción.", color = Muted, modifier = Modifier.padding(16.dp)) }
                                 itemsIndexed(l) { i, s -> Row1(s, i, false, l) }
+                            }
                             }
                         }
                         else -> QueueView(queueIds, byId, curId, ctrl) { ctrl?.clearMediaItems(); curId = null }
@@ -704,6 +751,7 @@ fun App() {
                             Column(Modifier.weight(1f)) {
                                 Text(yt.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(yt.channel + " · YouTube", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (ytProblem.isNotEmpty()) Text(ytProblem, color = Color(0xFFFFB4A8), fontSize = 12.sp, maxLines = 3)
                             }
                             Box(Modifier.size(40.dp).clickable { web.evaluateJavascript(if (ytPlaying) "pa()" else "pl()", null) }, contentAlignment = Alignment.Center) {
                                 if (ytPlaying) PauseBars(Color.White, 5.dp, 18.dp) else Text("▶", color = Color.White, fontSize = 20.sp)
@@ -717,7 +765,7 @@ fun App() {
                             onValueChange = { ytDrag = true; ytPos = it.toDouble() },
                             onValueChangeFinished = { web.evaluateJavascript("sk($ytPos)", null); ytDrag = false },
                             valueRange = 0f..maxOf(ytDur, 1.0).toFloat(),
-                            colors = SliderDefaults.colors(thumbColor = Green, activeTrackColor = Green),
+                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent),
                             modifier = Modifier.padding(horizontal = 8.dp)
                         )
                     }
@@ -734,7 +782,7 @@ fun App() {
                             Text(cs.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(cs.artist, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        Text(if (cs.id in favs) "♥" else "♡", color = if (cs.id in favs) Green else Color.White, fontSize = 24.sp, modifier = Modifier.clickable { toggleFav(cs.id) }.padding(8.dp))
+                        Text(if (cs.id in favs) "♥" else "♡", color = if (cs.id in favs) Accent else Color.White, fontSize = 24.sp, modifier = Modifier.clickable { toggleFav(cs.id) }.padding(8.dp))
                         Box(Modifier.size(40.dp).clickable { ctrl?.let { if (playing) it.pause() else it.play() } }, contentAlignment = Alignment.Center) {
                             if (playing) PauseBars(Color.White, 5.dp, 18.dp) else Text("▶", color = Color.White, fontSize = 20.sp)
                         }
@@ -750,7 +798,7 @@ fun App() {
 
             val yf = ytList.getOrNull(ytIdx)
             if (ytFull && yf != null) {
-                Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF2A1F22), Color(0xFF0B0B0C)))).systemBarsPadding()) {
+                Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(BgTop, Color(0xFF0B0B0C)))).systemBarsPadding()) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("⌄", color = Color.White, fontSize = 26.sp, modifier = Modifier.clickable { ytFull = false }.padding(4.dp))
                         Text("Reproduciendo desde YouTube", color = Muted, fontSize = 12.sp, modifier = Modifier.weight(1f).padding(start = 12.dp))
@@ -763,6 +811,7 @@ fun App() {
                     Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                         Text(yf.title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(yf.channel, color = Color(0xFFCCCCCC), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (ytProblem.isNotEmpty()) Text(ytProblem, color = Color(0xFFFFB4A8), fontSize = 13.sp, maxLines = 3)
                         Slider(
                             value = ytPos.coerceIn(0.0, maxOf(ytDur, 1.0)).toFloat(),
                             onValueChange = { ytDrag = true; ytPos = it.toDouble() },
@@ -834,7 +883,7 @@ fun App() {
                             Text(cp.artist, color = Color(0xFFCCCCCC), fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Box(Modifier.padding(start = 8.dp).size(38.dp).clip(CircleShape).background(Color(0x33FFFFFF)).clickable { toggleFav(cp.id) }, contentAlignment = Alignment.Center) {
-                            Text(if (cp.id in favs) "♥" else "♡", color = if (cp.id in favs) Green else Color.White, fontSize = 20.sp)
+                            Text(if (cp.id in favs) "♥" else "♡", color = if (cp.id in favs) Accent else Color.White, fontSize = 20.sp)
                         }
                         Box(Modifier.padding(start = 8.dp)) {
                             Box(Modifier.size(38.dp).clip(CircleShape).background(Color(0x33FFFFFF)).clickable { pmenu = true }, contentAlignment = Alignment.Center) { Text("⋯", color = Color.White, fontSize = 20.sp) }
@@ -864,9 +913,9 @@ fun App() {
                         Text("⏭", color = Color.White, fontSize = 30.sp, modifier = Modifier.clickable { ctrl?.seekToNext() }.padding(14.dp))
                     }
                     Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                        Text("⇄", color = if (shuffle) Green else Color(0xFFDDDDDD), fontSize = 26.sp, modifier = Modifier.clickable { ctrl?.setShuffleModeEnabled(!shuffle) }.padding(12.dp))
+                        Text("⇄", color = if (shuffle) Accent else Color(0xFFDDDDDD), fontSize = 26.sp, modifier = Modifier.clickable { ctrl?.setShuffleModeEnabled(!shuffle) }.padding(12.dp))
                         Text("☰", color = Color(0xFFDDDDDD), fontSize = 26.sp, modifier = Modifier.clickable { expanded = false; tab = 3 }.padding(12.dp))
-                        Text(if (repeat == Player.REPEAT_MODE_ONE) "↻¹" else "↻", color = if (repeat == Player.REPEAT_MODE_OFF) Color(0xFFDDDDDD) else Green, fontSize = 26.sp,
+                        Text(if (repeat == Player.REPEAT_MODE_ONE) "↻¹" else "↻", color = if (repeat == Player.REPEAT_MODE_OFF) Color(0xFFDDDDDD) else Accent, fontSize = 26.sp,
                             modifier = Modifier.clickable {
                                 ctrl?.setRepeatMode(when (repeat) {
                                     Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
